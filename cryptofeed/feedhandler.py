@@ -98,7 +98,7 @@ def setup_signal_handlers(loop):
 
 
 class FeedHandler:
-    def __init__(self, retries=10, timeout_interval=10, log_messages_on_error=False, raw_message_capture=None, config=None):
+    def __init__(self, retries=10, timeout_interval=10, log_messages_on_error=False, raw_message_capture=None, handler_enabled=True, config=None):
         """
         retries: int
             number of times the connection will be retried (in the event of a disconnect or other failure)
@@ -108,6 +108,8 @@ class FeedHandler:
             if true, log the message from the exchange on exceptions
         raw_message_capture: callback
             if defined, callback to save/process/handle raw message (primarily for debugging purposes)
+        handler_enabled: boolean
+            run message handlers (and any registered callbacks) when raw message capture is enabled
         config: str, dict or None
             if str, absolute path (including file name) of the config file. If not provided, config can also be a dictionary of values, or
             can be None, which will default options. See docs/config.md for more information.
@@ -118,20 +120,13 @@ class FeedHandler:
         self.last_msg = defaultdict(lambda: None)
         self.timeout_interval = timeout_interval
         self.log_messages_on_error = log_messages_on_error
-        self.raw_message_capture = raw_message_capture
+        self.raw_message_capture = raw_message_capture  # TODO: create/append callbacks to do raw_message_capture
+        self.handler_enabled = handler_enabled
         self.config = Config(config=config)
 
         get_logger('feedhandler', self.config.log.filename, self.config.log.level)
         if self.config.log_msg:
             LOG.info(self.config.log_msg)
-
-        if self.config.uvloop:
-            try:
-                import uvloop
-                asyncio.set_event_loop_policy(uvloop.EventLoopPolicy())
-                LOG.info('FH: uvloop initalized')
-            except ImportError:
-                LOG.info("FH: uvloop not initialized")
 
     def playback(self, feed, filenames):
         loop = asyncio.get_event_loop()
@@ -183,35 +178,6 @@ class FeedHandler:
         else:
             self.feeds.append((feed, timeout))
 
-    def add_feed_running(self, feed, loop=None, timeout=120, **kwargs):
-        """
-        Add and start a new feed to a running instance of cryptofeed
-
-        feed: str or class
-            the feed (exchange) to add to the handler
-        loop: None, or EventLoop
-            the loop on which to add the tasks
-        timeout: int
-            number of seconds without a message before the feed is considered
-            to be timed out. The connection will be closed, and if retries
-            have not been exhausted, the connection will be reestablished.
-            If set to -1, no timeout will occur.
-        kwargs: dict
-            if a string is used for the feed, kwargs will be passed to the
-            newly instantiated object
-        """
-        self.add_feed(feed, timeout=timeout, *kwargs)
-
-        if loop is None:
-            loop = asyncio.get_event_loop()
-
-        f, timeout = self.feeds[-1]
-
-        for conn, sub, handler in f.connect():
-            conn.set_raw_data_callback(self.raw_message_capture)
-            self.timeout[conn.uuid] = timeout
-            loop.create_task(self._connect(conn, sub, handler))
-
     def add_nbbo(self, feeds, symbols, callback, timeout=120):
         """
         feeds: list of feed classes
@@ -231,7 +197,9 @@ class FeedHandler:
     def run(self, start_loop: bool = True, install_signal_handlers: bool = True):
         """
         start_loop: bool, default True
-            if false, will not start the event loop.
+            if false, will not start the event loop. Also, will not
+            use uvlib/uvloop if false, the caller will
+            need to init uvloop if desired.
         install_signal_handlers: bool, default True
             if True, will install the signal handlers on the event loop. This
             can only be done from the main thread's loop, so if running cryptofeed on
@@ -243,7 +211,18 @@ class FeedHandler:
             LOG.critical(txt)
             raise ValueError(txt)
 
-        loop = asyncio.get_event_loop()
+        # The user managing the ASyncIO loop themselves sets start_loop=False => they decide to enable uvloop if they want to
+        # therefore, the FeedHandler attempts to enable uvloop only when start_loop==True
+        if start_loop:
+            try:
+                import uvloop
+                asyncio.set_event_loop_policy(uvloop.EventLoopPolicy())
+                LOG.info('FH: uvloop activated')
+            except Exception as why:  # ImportError
+                LOG.info('FH: no uvloop because %r', why)
+
+        # loop = asyncio.get_event_loop()
+        loop = asyncio.new_event_loop()
         # Good to enable when debugging or without code change: export PYTHONASYNCIODEBUG=1)
         # loop.set_debug(True)
 
@@ -252,7 +231,6 @@ class FeedHandler:
 
         for feed, timeout in self.feeds:
             for conn, sub, handler in feed.connect():
-                conn.set_raw_data_callback(self.raw_message_capture)
                 loop.create_task(self._connect(conn, sub, handler))
                 self.timeout[conn.uuid] = timeout
 
@@ -283,11 +261,7 @@ class FeedHandler:
         shutdown_tasks = []
         for feed, _ in self.feeds:
             task = loop.create_task(feed.shutdown())
-            try:
-                task.set_name(f'shutdown_feed_{feed.id}')
-            except AttributeError:
-                # set_name only in 3.8+
-                pass
+            task.set_name(f'shutdown_feed_{feed.id}')
             shutdown_tasks.append(task)
 
         LOG.info('FH: wait %s backend tasks until termination', len(shutdown_tasks))
@@ -358,7 +332,7 @@ class FeedHandler:
                     await asyncio.sleep(rate_limited * 60)
                     rate_limited += 1
             except Exception:
-                LOG.error("%s: encountered an exception, reconnecting after %.1f seconds", conn.uuid, delay, exc_info=True)
+                LOG.error("%s: encountered an exception, reconnecting", conn.uuid, exc_info=True)
                 await asyncio.sleep(delay)
                 retries += 1
                 delay *= 2
@@ -371,11 +345,25 @@ class FeedHandler:
 
     async def _handler(self, connection, handler):
         try:
-            async for message in connection.read():
-                if self.retries == 0:
-                    return
-                self.last_msg[connection.uuid] = time()
-                await handler(message, connection, self.last_msg[connection.uuid])
+            if self.raw_message_capture and self.handler_enabled:
+                async for message in connection.read():
+                    if self.retries == 0:
+                        return
+                    self.last_msg[connection.uuid] = time()
+                    await self.raw_message_capture(message, self.last_msg[connection.uuid], connection.uuid)
+                    await handler(message, connection, self.last_msg[connection.uuid])
+            elif self.raw_message_capture:
+                async for message in connection.read():
+                    if self.retries == 0:
+                        return
+                    self.last_msg[connection.uuid] = time()
+                    await self.raw_message_capture(message, self.last_msg[connection.uuid], connection.uuid)
+            else:
+                async for message in connection.read():
+                    if self.retries == 0:
+                        return
+                    self.last_msg[connection.uuid] = time()
+                    await handler(message, connection, self.last_msg[connection.uuid])
         except Exception:
             if self.retries == 0:
                 return

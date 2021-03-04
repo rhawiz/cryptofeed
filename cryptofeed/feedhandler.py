@@ -221,7 +221,8 @@ class FeedHandler:
             except Exception as why:  # ImportError
                 LOG.info('FH: no uvloop because %r', why)
 
-        loop = asyncio.get_event_loop()
+        # loop = asyncio.get_event_loop()
+        loop = asyncio.new_event_loop()
         # Good to enable when debugging or without code change: export PYTHONASYNCIODEBUG=1)
         # loop.set_debug(True)
 

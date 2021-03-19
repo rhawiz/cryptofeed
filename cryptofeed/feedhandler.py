@@ -13,6 +13,7 @@ import sys
 try:
     # unix / macos only
     from signal import SIGHUP
+
     SIGNALS = (SIGABRT, SIGINT, SIGTERM, SIGHUP)
 except ImportError:
     SIGNALS = (SIGABRT, SIGINT, SIGTERM)
@@ -40,9 +41,7 @@ from cryptofeed.providers import *
 from cryptofeed.log import get_logger
 from cryptofeed.nbbo import NBBO
 
-
 LOG = logging.getLogger('feedhandler')
-
 
 # Maps string name to class name for use with config
 _EXCHANGES = {
@@ -86,8 +85,10 @@ def setup_signal_handlers(loop):
     """
     This must be run from the loop in the main thread
     """
+
     def handle_stop_signals(*args):
         raise SystemExit
+
     if sys.platform.startswith('win'):
         # NOTE: asyncio loop.add_signal_handler() not supported on windows
         for sig in SIGNALS:
@@ -98,7 +99,8 @@ def setup_signal_handlers(loop):
 
 
 class FeedHandler:
-    def __init__(self, retries=10, timeout_interval=10, log_messages_on_error=False, raw_message_capture=None, handler_enabled=True, config=None):
+    def __init__(self, retries=10, timeout_interval=10, log_messages_on_error=False, raw_message_capture=None,
+                 handler_enabled=True, config=None):
         """
         retries: int
             number of times the connection will be retried (in the event of a disconnect or other failure)
@@ -123,6 +125,7 @@ class FeedHandler:
         self.raw_message_capture = raw_message_capture  # TODO: create/append callbacks to do raw_message_capture
         self.handler_enabled = handler_enabled
         self.config = Config(config=config)
+        self.event_loop = None
 
         get_logger('feedhandler', self.config.log.filename, self.config.log.level)
         if self.config.log_msg:
@@ -223,6 +226,7 @@ class FeedHandler:
 
         # loop = asyncio.get_event_loop()
         loop = asyncio.new_event_loop()
+        self.event_loop = loop
         # Good to enable when debugging or without code change: export PYTHONASYNCIODEBUG=1)
         # loop.set_debug(True)
 
@@ -251,8 +255,7 @@ class FeedHandler:
 
     def stop(self, loop=None):
         """Shutdown the Feed backends asynchronously."""
-        if not loop:
-            loop = asyncio.get_event_loop()
+        loop = loop or self.event_loop or asyncio.get_event_loop()
 
         LOG.info('FH: flag retries=0 to stop the tasks running the connection handlers')
         self.retries = 0
@@ -269,8 +272,7 @@ class FeedHandler:
 
     def close(self, loop=None):
         """Stop the asynchronous generators and close the event loop."""
-        if not loop:
-            loop = asyncio.get_event_loop()
+        loop = loop or self.event_loop or asyncio.get_event_loop()
 
         LOG.info('FH: stop the AsyncIO loop')
         loop.stop()
@@ -290,6 +292,7 @@ class FeedHandler:
 
         LOG.info('FH: close the AsyncIO loop')
         loop.close()
+        self.event_loop = None
 
     async def _watch(self, connection):
         if self.timeout[connection.uuid] == -1:

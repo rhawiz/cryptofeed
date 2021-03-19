@@ -197,6 +197,10 @@ class FeedHandler:
         for feed in feeds:
             self.add_feed(feed(channels=[L2_BOOK], symbols=symbols, callbacks={L2_BOOK: cb}), timeout=timeout)
 
+    def create_loop(self):
+        self.event_loop = asyncio.new_event_loop()
+        return self.event_loop
+
     def run(self, start_loop: bool = True, install_signal_handlers: bool = True):
         """
         start_loop: bool, default True
@@ -225,31 +229,32 @@ class FeedHandler:
                 LOG.info('FH: no uvloop because %r', why)
 
         # loop = asyncio.get_event_loop()
-        loop = asyncio.new_event_loop()
-        self.event_loop = loop
+        if self.event_loop is None:
+            self.event_loop = asyncio.new_event_loop()
+
         # Good to enable when debugging or without code change: export PYTHONASYNCIODEBUG=1)
         # loop.set_debug(True)
 
         if install_signal_handlers:
-            setup_signal_handlers(loop)
+            setup_signal_handlers(self.event_loop)
 
         for feed, timeout in self.feeds:
             for conn, sub, handler in feed.connect():
-                loop.create_task(self._connect(conn, sub, handler))
+                self.event_loop.create_task(self._connect(conn, sub, handler))
                 self.timeout[conn.uuid] = timeout
 
         if not start_loop:
             return
 
         try:
-            loop.run_forever()
+            self.event_loop.run_forever()
         except SystemExit:
             LOG.info('FH: System Exit received - shutting down')
         except Exception as why:
             LOG.exception('FH: Unhandled %r - shutting down', why)
         finally:
-            self.stop(loop=loop)
-            self.close(loop=loop)
+            self.stop(loop=self.event_loop)
+            self.close(loop=self.event_loop)
 
         LOG.info('FH: leaving run()')
 

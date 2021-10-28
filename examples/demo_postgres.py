@@ -5,17 +5,23 @@ Please see the LICENSE file for the terms and conditions
 associated with this software.
 '''
 from cryptofeed import FeedHandler
-from cryptofeed.backends.postgres import BookDeltaPostgres, BookPostgres, TickerPostgres, TradePostgres
-from cryptofeed.defines import BOOK_DELTA, L2_BOOK, TICKER, TRADES
-from cryptofeed.exchanges import Coinbase
+from cryptofeed.backends.postgres import CandlesPostgres, IndexPostgres, TickerPostgres, TradePostgres, OpenInterestPostgres, LiquidationsPostgres, FundingPostgres
+from cryptofeed.defines import CANDLES, INDEX, TICKER, TRADES, OPEN_INTEREST, LIQUIDATIONS, FUNDING
+from cryptofeed.exchanges import Bybit, Binance
 
 
-postgres_cfg = {'host': '127.0.0.1', 'user': 'postgres', 'db': 'postgres', 'pw': 'password123'}
+postgres_cfg = {'host': '127.0.0.1', 'user': 'postgres', 'db': 'cryptofeed', 'pw': 'password'}
+
+"""
+Sample SQL file to create tables for demo in postgres_tables.sql
+"""
 
 
 def main():
     f = FeedHandler()
-    f.add_feed(Coinbase(channels=[L2_BOOK, TRADES, TICKER], symbols=['BTC-USD'], callbacks={L2_BOOK: BookPostgres(**postgres_cfg), BOOK_DELTA: BookDeltaPostgres(**postgres_cfg), TICKER: TickerPostgres(**postgres_cfg), TRADES: TradePostgres(**postgres_cfg)}))
+    f.add_feed(Bybit(channels=[CANDLES, TRADES, OPEN_INTEREST, INDEX, LIQUIDATIONS, FUNDING], symbols=['BTC-USD-PERP'], callbacks={FUNDING: FundingPostgres(**postgres_cfg), LIQUIDATIONS: LiquidationsPostgres(**postgres_cfg), CANDLES: CandlesPostgres(**postgres_cfg), OPEN_INTEREST: OpenInterestPostgres(**postgres_cfg), INDEX: IndexPostgres(**postgres_cfg), TRADES: TradePostgres(**postgres_cfg)}))
+    f.add_feed(Binance(channels=[TICKER], symbols=['BTC-USDT'], callbacks={TICKER: TickerPostgres(**postgres_cfg)}))
+
     f.run()
 
 

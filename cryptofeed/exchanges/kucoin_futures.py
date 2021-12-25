@@ -29,6 +29,7 @@ class KuCoinFutures(Feed):
     id = KUCOIN
     symbol_endpoint = 'https://api-futures.kucoin.com/api/v1/contracts/active'
     valid_candle_intervals = {'1m', '3m', '15m', '30m', '1h', '2h', '4h', '6h', '8h', '12h', '1d', '1w'}
+    candle_interval_map = {'1m': '1min', '3m': '3min', '15m': '15min', '30m': '30min', '1h': '1hour', '2h': '2hour', '4h': '4hour', '6h': '6hour', '8h': '8hour', '12h': '12hour', '1d': '1day', '1w': '1week'}
     websocket_channels = {
         L2_BOOK: '/contractMarket/level2',
         TRADES: '/contractMarket/execution',
@@ -50,17 +51,18 @@ class KuCoinFutures(Feed):
         return ret, info
 
     def __init__(self, **kwargs):
-        address_info = self.http_sync.write('https://api.kucoin.com/api/v1/bullet-public', json=True)
+        address_info = self.http_sync.write('https://api-futures.kucoin.com/api/v1/bullet-public', json=True)
         token = address_info['data']['token']
         address = address_info['data']['instanceServers'][0]['endpoint']
         address = f"{address}?token={token}"
-        super().__init__(address, **kwargs)
+        super().__init__(**kwargs)
+        self.address = address
         self.ws_defaults['ping_interval'] = address_info['data']['instanceServers'][0]['pingInterval'] / 2000
-        lookup = {'1m': '1min', '3m': '3min', '15m': '15min', '30m': '30min', '1h': '1hour', '2h': '2hour', '4h': '4hour', '6h': '6hour', '8h': '8hour', '12h': '12hour', '1d': '1day', '1w': '1week'}
-        self.candle_interval = lookup[self.candle_interval]
-        self.normalize_interval = {value: key for key, value in lookup.items()}
+        # lookup = {'1m': '1min', '3m': '3min', '15m': '15min', '30m': '30min', '1h': '1hour', '2h': '2hour', '4h': '4hour', '6h': '6hour', '8h': '8hour', '12h': '12hour', '1d': '1day', '1w': '1week'}
+        # self.candle_interval = lookup[self.candle_interval]
+        # self.normalize_interval = {value: key for key, value in lookup.items()}
         if any([len(self.subscription[chan]) > 300 for chan in self.subscription]):
-            raise ValueError("Kucoin has a limit of 300 symbols per connection")
+            raise ValueError("KucoinFutures has a limit of 300 symbols per connection")
         self.__reset()
 
     def __reset(self):

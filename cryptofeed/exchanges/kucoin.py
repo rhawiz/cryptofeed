@@ -123,7 +123,14 @@ class KuCoin(Feed):
             }
         }
         """
-        t = Ticker(self.id, symbol, Decimal(msg['data']['bestBid']), Decimal(msg['data']['bestAsk']), None, raw=msg)
+        t = Ticker(
+            self.id,
+            self.exchange_symbol_to_std_symbol(symbol),
+            Decimal(msg['data']['bestBid']),
+            Decimal(msg['data']['bestAsk']),
+            float(msg['data']['time']) / 1000,
+            raw=msg
+        )
         await self.callback(TICKER, t, timestamp)
 
     async def _trades(self, msg: dict, symbol: str, timestamp: float):

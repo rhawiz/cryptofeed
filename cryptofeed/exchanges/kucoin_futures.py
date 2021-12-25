@@ -14,7 +14,7 @@ import hashlib
 
 from yapic import json
 
-from cryptofeed.defines import ASK, BID, BUY, CANDLES, KUCOIN, L2_BOOK, SELL, TICKER, TRADES
+from cryptofeed.defines import ASK, BID, BUY, CANDLES, KUCOIN_FUTURES, L2_BOOK, SELL, TICKER, TRADES
 from cryptofeed.feed import Feed
 from cryptofeed.util.time import timedelta_str_to_sec
 from cryptofeed.symbols import Symbol
@@ -26,7 +26,7 @@ LOG = logging.getLogger('feedhandler')
 
 
 class KuCoinFutures(Feed):
-    id = KUCOIN
+    id = KUCOIN_FUTURES
     symbol_endpoint = 'https://api-futures.kucoin.com/api/v1/contracts/active'
     valid_candle_intervals = {'1m', '3m', '15m', '30m', '1h', '2h', '4h', '6h', '8h', '12h', '1d', '1w'}
     candle_interval_map = {'1m': '1min', '3m': '3min', '15m': '15min', '30m': '30min', '1h': '1hour', '2h': '2hour', '4h': '4hour', '6h': '6hour', '8h': '8hour', '12h': '12hour', '1d': '1day', '1w': '1week'}

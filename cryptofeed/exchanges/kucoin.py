@@ -238,7 +238,7 @@ class KuCoin(Feed):
                     self._l2_book[symbol].book[side][price] = amount
                     delta[side].append((price, amount))
 
-        await self.book_callback(book_type=L2_BOOK, book=self._l2_book[symbol], timestamp=timestamp, receipt_timestamp=time.time(), delta=delta, raw=msg, sequence_number=data['sequence'])
+        await self.book_callback(book_type=L2_BOOK, book=self._l2_book[symbol], timestamp=timestamp, receipt_timestamp=time.time(), delta=delta, raw=msg, sequence_number=data['sequenceEnd'])
         # await self.book_callback(L2_BOOK, self._l2_book[symbol], timestamp, delta=delta, raw=msg, sequence_number=data['sequenceEnd'])
 
     async def message_handler(self, msg: str, conn, timestamp: float):

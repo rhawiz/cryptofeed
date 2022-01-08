@@ -18,16 +18,17 @@ from cryptofeed.defines import ASK, BID, BUY, CANDLES, KUCOIN_FUTURES, L2_BOOK, 
 from cryptofeed.feed import Feed
 from cryptofeed.util.time import timedelta_str_to_sec
 from cryptofeed.symbols import Symbol
-from cryptofeed.connection import AsyncConnection
+from cryptofeed.connection import AsyncConnection, RestEndpoint, Routes, WebsocketEndpoint
 from cryptofeed.types import OrderBook, Trade, Ticker, Candle
-
 
 LOG = logging.getLogger('feedhandler')
 
 
 class KuCoinFutures(Feed):
     id = KUCOIN_FUTURES
-    symbol_endpoint = 'https://api-futures.kucoin.com/api/v1/contracts/active'
+    rest_endpoints = [RestEndpoint('https://api-futures.kucoin.com', routes=Routes('/api/v1/contracts/active',
+                                                                                   l2book='/api/v1/level2/snapshot?symbol={}'))]
+
     valid_candle_intervals = {'1m', '3m', '15m', '30m', '1h', '2h', '4h', '6h', '8h', '12h', '1d', '1w'}
     candle_interval_map = {'1m': '1min', '3m': '3min', '15m': '15min', '30m': '30min', '1h': '1hour', '2h': '2hour', '4h': '4hour', '6h': '6hour', '8h': '8hour', '12h': '12hour', '1d': '1day', '1w': '1week'}
     websocket_channels = {
@@ -36,6 +37,10 @@ class KuCoinFutures(Feed):
         TICKER: '/contractMarket/ticker',
         CANDLES: '/contractMarket/candles'
     }
+
+    @classmethod
+    def is_authenticated_channel(cls, channel: str) -> bool:
+        return channel in (L2_BOOK)
 
     @classmethod
     def _parse_symbol_data(cls, data: dict) -> Tuple[Dict, Dict]:
@@ -55,12 +60,8 @@ class KuCoinFutures(Feed):
         token = address_info['data']['token']
         address = address_info['data']['instanceServers'][0]['endpoint']
         address = f"{address}?token={token}"
+        self.websocket_endpoints = [WebsocketEndpoint(address, options={'ping_interval': address_info['data']['instanceServers'][0]['pingInterval'] / 2000})]
         super().__init__(**kwargs)
-        self.address = address
-        self.ws_defaults['ping_interval'] = address_info['data']['instanceServers'][0]['pingInterval'] / 2000
-        # lookup = {'1m': '1min', '3m': '3min', '15m': '15min', '30m': '30min', '1h': '1hour', '2h': '2hour', '4h': '4hour', '6h': '6hour', '8h': '8hour', '12h': '12hour', '1d': '1day', '1w': '1week'}
-        # self.candle_interval = lookup[self.candle_interval]
-        # self.normalize_interval = {value: key for key, value in lookup.items()}
         if any([len(self.subscription[chan]) > 300 for chan in self.subscription]):
             raise ValueError("KucoinFutures has a limit of 300 symbols per connection")
         self.__reset()
@@ -83,7 +84,7 @@ class KuCoinFutures(Feed):
         }
         """
         symbol, interval = symbol.split("_")
-        interval = self.normalize_interval[interval]
+        interval = self.normalize_candle_interval[interval]
         start, open, close, high, low, vol, _ = msg['data']['candles']
         end = int(start) + timedelta_str_to_sec(interval) - 1
         c = Candle(
@@ -186,10 +187,10 @@ class KuCoinFutures(Feed):
         return header
 
     async def _snapshot(self, symbol: str):
-        url = f"https://api-futures.kucoin.com/api/v1/level2/snapshot?symbol={symbol}"
+        str_to_sign = "GET" + self.rest_endpoints[0].routes.l2book.format(symbol)
         str_to_sign = "GET" + f"/api/v1/level2/snapshot?symbol={symbol}"
         headers = self.generate_token(str_to_sign)
-        data = await self.http_conn.read(url, header=headers)
+        data = await self.http_conn.read(self.rest_endpoints[0].route('l2book', self.sandbox).format(symbol), header=headers)
         timestamp = time.time()
         data = json.loads(data, parse_float=Decimal)
         data = data['data']
@@ -204,7 +205,8 @@ class KuCoinFutures(Feed):
             asks=asks
         )
 
-        await self.book_callback(L2_BOOK, self._l2_book[symbol], timestamp, raw=data, sequence_number=int(data['sequence']))
+        await self.book_callback(L2_BOOK, self._l2_book[symbol], timestamp, raw=data,
+                                 sequence_number=int(data['sequence']))
 
     async def _process_l2_book(self, msg: dict, symbol: str, timestamp: float):
         """
@@ -223,7 +225,6 @@ class KuCoinFutures(Feed):
             'type': 'message'
         }
         """
-
         data = msg['data']
         sequence = data['sequence']
         if symbol not in self._l2_book or sequence > self.seq_no[symbol] + 1:
@@ -320,7 +321,7 @@ class KuCoinFutures(Feed):
                     await conn.write(json.dumps({
                         'id': 1,
                         'type': 'subscribe',
-                        'topic': f"{chan}:{','.join(symbols[slice_index: slice_index+100])}",
+                        'topic': f"{chan}:{','.join(symbols[slice_index: slice_index + 100])}",
                         'privateChannel': False,
                         'response': True
                     }))

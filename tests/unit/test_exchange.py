@@ -1,5 +1,5 @@
 '''
-Copyright (C) 2017-2021  Bryant Moscon - bmoscon@gmail.com
+Copyright (C) 2017-2022 Bryant Moscon - bmoscon@gmail.com
 
 Please see the LICENSE file for the terms and conditions
 associated with this software.
@@ -82,7 +82,7 @@ def test_exchange_playback(exchange):
     dir = os.path.dirname(os.path.realpath(__file__))
     pcap = glob.glob(f"{dir}/../../sample_data/{exchange}.*")
 
-    results = playback(exchange, pcap)
+    results = playback(exchange, pcap, config="tests/config_test.yaml")
     message_count = get_message_count(pcap)
 
     assert results['messages_processed'] == message_count

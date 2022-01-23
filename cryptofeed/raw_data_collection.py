@@ -1,5 +1,5 @@
 '''
-Copyright (C) 2017-2021  Bryant Moscon - bmoscon@gmail.com
+Copyright (C) 2017-2022 Bryant Moscon - bmoscon@gmail.com
 
 Please see the LICENSE file for the terms and conditions
 associated with this software.
@@ -22,11 +22,11 @@ def bytes_string_to_bytes(string):
     return tree.body[0].value.s
 
 
-def playback(feed: str, filenames: list, callbacks: dict = None):
-    return asyncio.run(_playback(feed, filenames, callbacks))
+def playback(feed: str, filenames: list, callbacks: dict = None, config: str = 'config.yaml'):
+    return asyncio.run(_playback(feed, filenames, callbacks, config))
 
 
-async def _playback(feed: str, filenames: list, callbacks: dict):
+async def _playback(feed: str, filenames: list, callbacks: dict, config: str):
     callback_stats = defaultdict(int)
 
     class FakeWS:
@@ -90,7 +90,7 @@ async def _playback(feed: str, filenames: list, callbacks: dict):
     else:
         for ctype in callbacks.keys():
             callbacks[ctype] = [callbacks[ctype], functools.partial(internal_cb, cb_type=ctype)]
-    feed = EXCHANGE_MAP[feed](config="config.yaml", subscription=sub, callbacks=callbacks)
+    feed = EXCHANGE_MAP[feed](config=config, subscription=sub, callbacks=callbacks)
 
     exchange_sub = {}
     for chan in ws.subscription:

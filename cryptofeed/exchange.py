@@ -30,6 +30,7 @@ class Exchange:
     valid_candle_intervals = NotImplemented
     candle_interval_map = NotImplemented
     http_sync = HTTPSync()
+    allow_empty_subscriptions = False
 
     def __init__(self, config=None, sandbox=False, subaccount=None, **kwargs):
         self.config = Config(config=config)
@@ -42,6 +43,8 @@ class Exchange:
         self.key_passphrase = keys.key_passphrase
         self.account_name = keys.account_name
 
+        self.ignore_invalid_instruments = self.config.ignore_invalid_instruments
+
         if not Symbols.populated(self.id):
             self.symbol_mapping()
         self.normalized_symbol_mapping, _ = Symbols.get(self.id)
@@ -49,7 +52,7 @@ class Exchange:
 
     @classmethod
     def timestamp_normalize(cls, ts: dt) -> float:
-        return ts.timestamp()
+        return ts.astimezone(timezone.utc).timestamp()
 
     @classmethod
     def normalize_order_options(cls, option: str):
@@ -128,6 +131,9 @@ class Exchange:
         try:
             return self.exchange_symbol_mapping[symbol]
         except KeyError:
+            if self.ignore_invalid_instruments:
+                LOG.warning('Invalid symbol %s configured for %s', symbol, self.id)
+                return symbol
             raise UnsupportedSymbol(f'{symbol} is not supported on {self.id}')
 
     def std_symbol_to_exchange_symbol(self, symbol: Union[str, Symbol]) -> str:
@@ -136,6 +142,9 @@ class Exchange:
         try:
             return self.normalized_symbol_mapping[symbol]
         except KeyError:
+            if self.ignore_invalid_instruments:
+                LOG.warning('Invalid symbol %s configured for %s', symbol, self.id)
+                return symbol
             raise UnsupportedSymbol(f'{symbol} is not supported on {self.id}')
 
 
@@ -162,7 +171,8 @@ class RestExchange:
         if isinstance(timestamp, (float, int)):
             return timestamp
         if isinstance(timestamp, dt):
-            return timestamp.replace(tzinfo=timezone.utc).timestamp()
+            return timestamp.astimezone(timezone.utc).timestamp()
+
         if isinstance(timestamp, str):
             try:
                 return dt.strptime(timestamp, '%Y-%m-%d %H:%M:%S.%f').replace(tzinfo=timezone.utc).timestamp()

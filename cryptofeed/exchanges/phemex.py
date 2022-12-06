@@ -15,7 +15,7 @@ from typing import Dict, Tuple
 from yapic import json
 
 from cryptofeed.connection import AsyncConnection, RestEndpoint, Routes, WebsocketEndpoint
-from cryptofeed.defines import BALANCES, BID, ASK, BUY, CANDLES, PHEMEX, L2_BOOK, SELL, TRADES
+from cryptofeed.defines import BALANCES, BID, ASK, BUY, CANDLES, PHEMEX, L2_BOOK, SELL, TRADES, PERPETUAL
 from cryptofeed.feed import Feed
 from cryptofeed.types import OrderBook, Trade, Candle, Balance
 
@@ -50,8 +50,10 @@ class Phemex(Feed):
             if entry['status'] != 'Listed':
                 continue
             stype = entry['type'].lower()
-            base, quote = entry['displaySymbol'].split(" / ")
-            s = Symbol(base, quote, type=stype)
+            if "perpetual" in stype:    # can be "perpetualv2"
+                stype = PERPETUAL
+            base, quote = entry['displaySymbol'].split("/")
+            s = Symbol(base.strip(), quote.strip(), type=stype)
             ret[s.normalized] = entry['symbol']
             info['tick_size'][s.normalized] = entry['tickSize'] if 'tickSize' in entry else entry['quoteTickSize']
             info['instrument_type'][s.normalized] = stype
@@ -67,10 +69,13 @@ class Phemex(Feed):
         if sum(map(len, self.subscription.values())) > 100:
             raise ValueError(f"{self.id} only allows a maximum of 100 symbol/channel subscriptions")
 
-        self.__reset()
+    def __reset(self, conn: AsyncConnection):
+        if self.std_channel_to_exchange(L2_BOOK) in conn.subscription:
+            for pair in conn.subscription[self.std_channel_to_exchange(L2_BOOK)]:
+                std_pair = self.exchange_symbol_to_std_symbol(pair)
 
-    def __reset(self):
-        self._l2_book = {}
+                if std_pair in self._l2_book:
+                    del self._l2_book[std_pair]
 
     async def _book(self, msg: dict, timestamp: float):
         """
@@ -632,15 +637,16 @@ class Phemex(Feed):
             LOG.warning("%s: Invalid message type %s", conn.uuid, msg)
 
     async def subscribe(self, conn: AsyncConnection):
-        self.__reset()
+        self.__reset(conn)
 
-        for chan, symbol in conn.subscription.items():
+        for chan, symbols in conn.subscription.items():
             if not self.exchange_channel_to_std(chan) == BALANCES:
-                msg = {"id": 1, "method": chan, "params": [symbol]}
-                if self.exchange_channel_to_std(chan) == CANDLES:
-                    msg['params'] = [symbol, self.candle_interval_map[self.candle_interval]]
-                LOG.debug(f"{conn.uuid}: Sending subscribe request to public channel: {msg}")
-                await conn.write(json.dumps(msg))
+                for sym in symbols:
+                    msg = {"id": 1, "method": chan, "params": [sym]}
+                    if self.exchange_channel_to_std(chan) == CANDLES:
+                        msg['params'] = [*[sym], self.candle_interval_map[self.candle_interval]]
+                    LOG.debug(f"{conn.uuid}: Sending subscribe request to public channel: {msg}")
+                    await conn.write(json.dumps(msg))
 
     async def authenticate(self, conn: AsyncConnection):
         if any(self.is_authenticated_channel(self.exchange_channel_to_std(chan)) for chan in self.subscription):

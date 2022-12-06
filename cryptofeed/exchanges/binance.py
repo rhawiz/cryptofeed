@@ -29,8 +29,8 @@ LOG = logging.getLogger('feedhandler')
 
 class Binance(Feed, BinanceRestMixin):
     id = BINANCE
-    websocket_endpoints = [WebsocketEndpoint('wss://stream.binance.com:9443')]
-    rest_endpoints = [RestEndpoint('https://api.binance.com', routes=Routes('/api/v3/exchangeInfo', l2book='/api/v3/depth?symbol={}&limit={}', authentication='/api/v3/userDataStream'))]
+    websocket_endpoints = [WebsocketEndpoint('wss://stream.binance.com:9443', sandbox='wss://testnet.binance.vision')]
+    rest_endpoints = [RestEndpoint('https://api.binance.com', routes=Routes('/api/v3/exchangeInfo', l2book='/api/v3/depth?symbol={}&limit={}', authentication='/api/v3/userDataStream'), sandbox='https://testnet.binance.vision')]
 
     valid_depths = [5, 10, 20, 50, 100, 500, 1000, 5000]
     # m -> minutes; h -> hours; d -> days; w -> weeks; M -> months
@@ -74,10 +74,8 @@ class Binance(Feed, BinanceRestMixin):
             info['instrument_type'][s.normalized] = stype
         return ret, info
 
-    def __init__(self, candle_closed_only=False, depth_interval='100ms', **kwargs):
+    def __init__(self, depth_interval='100ms', **kwargs):
         """
-        candle_closed_only: bool
-            return only closed candles, i.e. no updates in between intervals.
         depth_interval: str
             time between l2_book/delta updates {'100ms', '1000ms'} (different from BINANCE_FUTURES & BINANCE_DELIVERY)
         """
@@ -85,7 +83,6 @@ class Binance(Feed, BinanceRestMixin):
             raise ValueError(f"Depth interval must be one of {self.valid_depth_intervals}")
 
         super().__init__(**kwargs)
-        self.candle_closed_only = candle_closed_only
         self.depth_interval = depth_interval
         self._open_interest_cache = {}
         self._reset()
@@ -284,11 +281,12 @@ class Binance(Feed, BinanceRestMixin):
 
         resp = await self.http_conn.read(self.rest_endpoints[0].route('l2book', self.sandbox).format(pair, max_depth))
         resp = json.loads(resp, parse_float=Decimal)
+        timestamp = self.timestamp_normalize(resp['E']) if 'E' in resp else None
 
         std_pair = self.exchange_symbol_to_std_symbol(pair)
         self.last_update_id[std_pair] = resp['lastUpdateId']
         self._l2_book[std_pair] = OrderBook(self.id, std_pair, max_depth=self.max_depth, bids={Decimal(u[0]): Decimal(u[1]) for u in resp['bids']}, asks={Decimal(u[0]): Decimal(u[1]) for u in resp['asks']})
-        await self.book_callback(L2_BOOK, self._l2_book[std_pair], time.time(), timestamp=None, raw=resp, sequence_number=self.last_update_id[std_pair])
+        await self.book_callback(L2_BOOK, self._l2_book[std_pair], time.time(), timestamp=timestamp, raw=resp, sequence_number=self.last_update_id[std_pair])
 
     async def _book(self, msg: dict, pair: str, timestamp: float):
         """
@@ -328,14 +326,13 @@ class Binance(Feed, BinanceRestMixin):
             for update in msg[s]:
                 price = Decimal(update[0])
                 amount = Decimal(update[1])
+                delta[side].append((price, amount))
 
                 if amount == 0:
                     if price in self._l2_book[pair].book[side]:
                         del self._l2_book[pair].book[side][price]
-                        delta[side].append((price, amount))
                 else:
                     self._l2_book[pair].book[side][price] = amount
-                    delta[side].append((price, amount))
 
         await self.book_callback(L2_BOOK, self._l2_book[pair], timestamp, timestamp=self.timestamp_normalize(msg['E']), raw=msg, delta=delta, sequence_number=self.last_update_id[pair])
 

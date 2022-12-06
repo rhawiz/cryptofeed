@@ -27,11 +27,11 @@ class BitDotCom(Feed):
     id = BITDOTCOM
 
     websocket_endpoints = [
-        WebsocketEndpoint('wss://spot-ws.bit.com', instrument_filter=('TYPE', (SPOT)), sandbox='wss://betaspot-ws.bitexch.dev'),
+        WebsocketEndpoint('wss://spot-ws.bit.com', instrument_filter=('TYPE', (SPOT,)), sandbox='wss://betaspot-ws.bitexch.dev'),
         WebsocketEndpoint('wss://ws.bit.com', instrument_filter=('TYPE', (FUTURES, OPTION, PERPETUAL)), sandbox='wss://betaws.bitexch.dev'),
     ]
     rest_endpoints = [
-        RestEndpoint('https://spot-api.bit.com', instrument_filter=('TYPE', (SPOT)), sandbox='https://betaspot-api.bitexch.dev', routes=Routes('/spot/v1/instruments', authentication='/spot/v1/ws/auth')),
+        RestEndpoint('https://spot-api.bit.com', instrument_filter=('TYPE', (SPOT,)), sandbox='https://betaspot-api.bitexch.dev', routes=Routes('/spot/v1/instruments', authentication='/spot/v1/ws/auth')),
         RestEndpoint('https://api.bit.com', instrument_filter=('TYPE', (OPTION, FUTURES, PERPETUAL)), sandbox='https://betaapi.bitexch.dev', routes=Routes('/v1/instruments?currency={}&active=true', currencies='/v1/currencies', authentication='/v1/ws/auth'))
     ]
 
@@ -45,6 +45,10 @@ class BitDotCom(Feed):
         # funding rates paid and received
     }
     request_limit = 10
+
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self._sequence_no = defaultdict(int)
 
     @classmethod
     def _symbol_endpoint_prepare(cls, ep: RestEndpoint) -> Union[List[str], str]:
@@ -94,9 +98,16 @@ class BitDotCom(Feed):
 
         return ret, info
 
-    def __reset(self):
-        self._l2_book = {}
-        self._sequence_no = defaultdict(int)
+    def __reset(self, conn: AsyncConnection):
+        if self.std_channel_to_exchange(L2_BOOK) in conn.subscription:
+            for pair in conn.subscription[self.std_channel_to_exchange(L2_BOOK)]:
+                std_pair = self.exchange_symbol_to_std_symbol(pair)
+
+                if std_pair in self._l2_book:
+                    del self._l2_book[std_pair]
+
+                if std_pair in self._sequence_no:
+                    del self._sequence_no[std_pair]
 
     def encode_list(self, item_list: list):
         list_val = []
@@ -150,7 +161,7 @@ class BitDotCom(Feed):
                     return
 
     async def subscribe(self, connection: AsyncConnection):
-        self.__reset()
+        self.__reset(connection)
 
         for chan, symbols in connection.subscription.items():
             if len(symbols) == 0:
@@ -159,7 +170,7 @@ class BitDotCom(Feed):
             msg = {
                 'type': 'subscribe',
                 'channels': [chan],
-                'instruments' if stype in {FUTURES, OPTION} else 'pairs': symbols,
+                'instruments' if stype in {PERPETUAL, FUTURES, OPTION} else 'pairs': symbols,
             }
             if self.is_authenticated_channel(self.exchange_channel_to_std(chan)):
                 msg['token'] = self._auth_token
@@ -446,7 +457,6 @@ class BitDotCom(Feed):
             }
         }
         '''
-        print(msg)
         if 'balances' in msg['data']:
             # Spot
             for balance in msg['data']['balances']:

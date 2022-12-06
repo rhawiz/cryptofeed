@@ -24,10 +24,12 @@ LOG = logging.getLogger('feedhandler')
 
 
 class Feed(Exchange):
-    def __init__(self, candle_interval='1m', timeout=120, timeout_interval=30, retries=10, symbols=None, channels=None, subscription=None, callbacks=None, max_depth=0, checksum_validation=False, cross_check=False, exceptions=None, log_message_on_error=False, delay_start=0, http_proxy: StrOrURL = None, **kwargs):
+    def __init__(self, candle_interval='1m', candle_closed_only=True, timeout=120, timeout_interval=30, retries=10, symbols=None, channels=None, subscription=None, callbacks=None, max_depth=0, checksum_validation=False, cross_check=False, exceptions=None, log_message_on_error=False, delay_start=0, http_proxy: StrOrURL = None, **kwargs):
         """
         candle_interval: str
             the candle interval. See the specific exchange to see what intervals they support
+        candle_closed_only: bool
+            returns only closed/completed candles (if supported by exchange).
         timeout: int
             Time, in seconds, between message to wait before a feed is considered dead and will be restarted.
             Set to -1 for infinite.
@@ -77,6 +79,7 @@ class Feed(Exchange):
         self.http_proxy = http_proxy
         self.start_delay = delay_start
         self.candle_interval = candle_interval
+        self.candle_closed_only = candle_closed_only
         self._sequence_no = {}
 
         if self.valid_candle_intervals != NotImplemented:
@@ -189,6 +192,8 @@ class Feed(Exchange):
             limit = endpoint.limit
             addr = self._address()
             addr = endpoint.get_address(self.sandbox) if addr is None else addr
+            if not addr:
+                continue
 
             # filtering can only be done on normalized symbols, but this subscription needs to have the raw/exchange specific
             # subscription, so we need to temporarily convert the symbols back and forth. It has to be done here
@@ -197,12 +202,17 @@ class Feed(Exchange):
             filtered_sub = {chan: [self.std_symbol_to_exchange_symbol(s) for s in symbols] for chan, symbols in endpoint.subscription_filter(temp_sub).items()}
             count = sum(map(len, filtered_sub.values()))
 
-            if not filtered_sub or count == 0:
+            if not self.allow_empty_subscriptions and (not filtered_sub or count == 0):
                 continue
             if limit and count > limit:
                 ret.extend(limit_sub(filtered_sub, limit, auth, endpoint.options))
             else:
-                ret.append((WSAsyncConn(addr, self.id, authentication=auth, subscription=filtered_sub, **endpoint.options), self.subscribe, self.message_handler, self.authenticate))
+                if isinstance(addr, list):
+                    for add in addr:
+                        ret.append((WSAsyncConn(add, self.id, authentication=auth, subscription=filtered_sub, **endpoint.options), self.subscribe, self.message_handler, self.authenticate))
+                else:
+                    ret.append((WSAsyncConn(addr, self.id, authentication=auth, subscription=filtered_sub, **endpoint.options), self.subscribe, self.message_handler, self.authenticate))
+
         return ret
 
     def _ws_authentication(self, address: str, ws_options: dict) -> Tuple[str, dict]:
@@ -263,8 +273,7 @@ class Feed(Exchange):
         for callbacks in self.callbacks.values():
             for callback in callbacks:
                 if hasattr(callback, 'stop'):
-                    cb_name = callback.__class__.__name__ if hasattr(callback, '__class__') else callback.__name__
-                    LOG.info('%s: stopping backend %s', self.id, cb_name)
+                    LOG.info('%s: stopping backend %s', self.id, self.backend_name(callback))
                     await callback.stop()
         for c in self.connection_handlers:
             await c.conn.close()
@@ -285,7 +294,13 @@ class Feed(Exchange):
         for callbacks in self.callbacks.values():
             for callback in callbacks:
                 if hasattr(callback, 'start'):
-                    cb_name = callback.__class__.__name__ if hasattr(callback, '__class__') else callback.__name__
-                    LOG.info('%s: starting backend task %s', self.id, cb_name)
+                    LOG.info('%s: starting backend task %s with multiprocessing=%s', self.id, self.backend_name(callback), 'True' if self.config.backend_multiprocessing else 'False')
                     # Backends start tasks to write messages
-                    callback.start(loop)
+                    callback.start(loop, multiprocess=self.config.backend_multiprocessing)
+
+    def backend_name(self, callback):
+        if hasattr(callback, '__class__'):
+            if hasattr(callback, 'handler'):
+                return callback.handler.__class__.__name__ + "+" + callback.__class__.__name__
+            return callback.__class__.__name__
+        return callback.__name__

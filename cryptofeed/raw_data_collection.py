@@ -13,7 +13,7 @@ import ast
 from yapic import json
 from aiofile import AIOFile
 
-from cryptofeed.defines import HUOBI, UPBIT, OKEX, OKCOIN
+from cryptofeed.defines import HUOBI, UPBIT, OKX, OKCOIN
 from cryptofeed.exchanges import EXCHANGE_MAP
 
 
@@ -90,7 +90,7 @@ async def _playback(feed: str, filenames: list, callbacks: dict, config: str):
     else:
         for ctype in callbacks.keys():
             callbacks[ctype] = [callbacks[ctype], functools.partial(internal_cb, cb_type=ctype)]
-    feed = EXCHANGE_MAP[feed](config=config, subscription=sub, callbacks=callbacks)
+    feed = EXCHANGE_MAP[feed](candle_closed_only=False, config=config, subscription=sub, callbacks=callbacks)
 
     exchange_sub = {}
     for chan in ws.subscription:
@@ -120,7 +120,7 @@ async def _playback(feed: str, filenames: list, callbacks: dict, config: str):
                     timestamp, message = line.split(": ", 1)
                     counter += 1
 
-                    if OKCOIN in filename or OKEX in filename:
+                    if OKCOIN in filename or OKX in filename:
                         if message.startswith('b\'') or message.startswith('b"'):
                             message = bytes_string_to_bytes(message)
                     elif HUOBI in filename:
@@ -185,6 +185,7 @@ class AsyncFileCallback:
             if header:
                 self.data[uuid].append(f"{endpoint} -> {timestamp}: {data} header: {json.dumps(header)}")
             else:
+                data = data.replace("\n", "")
                 self.data[uuid].append(f"{endpoint} -> {timestamp}: {data}")
         elif send:
             self.data[uuid].append(f"{send} <- {timestamp}: {data}")
@@ -201,6 +202,7 @@ class AsyncFileCallback:
             if header:
                 w = w = f"{endpoint} -> {timestamp}: {data} header: {json.dumps(header)}"
             else:
+                data = data.replace("\n", "")
                 w = f"{endpoint} -> {timestamp}: {data}"
         elif send:
             w = f"{send} <- {timestamp}: {data}"

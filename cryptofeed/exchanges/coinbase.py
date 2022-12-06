@@ -38,12 +38,13 @@ class Coinbase(Feed, CoinbaseRestMixin):
     request_limit = 10
 
     @classmethod
-    def _parse_symbol_data(cls, data: dict) -> Tuple[Dict, Dict]:
+    def _parse_symbol_data(cls, data: list) -> Tuple[Dict, Dict]:
         ret = {}
         info = defaultdict(dict)
 
         for entry in data:
-            sym = Symbol(entry['base_currency'], entry['quote_currency'])
+            base, quote = entry['id'].split("-")
+            sym = Symbol(base, quote)
             info['tick_size'][sym.normalized] = entry['quote_increment']
             info['instrument_type'][sym.normalized] = sym.type
             ret[sym.normalized] = entry['id']
@@ -105,7 +106,9 @@ class Coinbase(Feed, CoinbaseRestMixin):
             'last_size': '0.00241692'
         }
         '''
-        await self.callback(TICKER, Ticker(self.id, self.exchange_symbol_to_std_symbol(msg['product_id']), Decimal(msg['best_bid']), Decimal(msg['best_ask']), self.timestamp_normalize(msg['time']), raw=msg), timestamp)
+
+        ts = self.timestamp_normalize(msg['time']) if 'time' in msg else None
+        await self.callback(TICKER, Ticker(self.id, self.exchange_symbol_to_std_symbol(msg['product_id']), Decimal(msg['best_bid']), Decimal(msg['best_ask']), ts, raw=msg), timestamp)
 
     async def _book_update(self, msg: dict, timestamp: float):
         '''

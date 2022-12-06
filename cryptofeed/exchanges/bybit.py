@@ -38,9 +38,9 @@ class Bybit(Feed):
         LIQUIDATIONS: 'liquidation'
     }
     websocket_endpoints = [
-        WebsocketEndpoint('wss://stream.bybit.com/realtime', channel_filter=(websocket_channels[L2_BOOK], websocket_channels[TRADES], websocket_channels[INDEX], websocket_channels[OPEN_INTEREST], websocket_channels[FUNDING], websocket_channels[CANDLES], websocket_channels[LIQUIDATIONS]), instrument_filter=('QUOTE', ('USD')), sandbox='wss://stream-testnet.bybit.com/realtime', options={'compression': None}),
-        WebsocketEndpoint('wss://stream.bybit.com/realtime_public', channel_filter=(websocket_channels[L2_BOOK], websocket_channels[TRADES], websocket_channels[INDEX], websocket_channels[OPEN_INTEREST], websocket_channels[FUNDING], websocket_channels[CANDLES], websocket_channels[LIQUIDATIONS]), instrument_filter=('QUOTE', ('USDT')), sandbox='wss://stream-testnet.bybit.com/realtime_public', options={'compression': None}),
-        WebsocketEndpoint('wss://stream.bybit.com/realtime_private', channel_filter=(websocket_channels[ORDER_INFO], websocket_channels[FILLS]), instrument_filter=('QUOTE', ('USDT')), sandbox='wss://stream-testnet.bybit.com/realtime_private', options={'compression': None}),
+        WebsocketEndpoint('wss://stream.bybit.com/realtime', channel_filter=(websocket_channels[L2_BOOK], websocket_channels[TRADES], websocket_channels[INDEX], websocket_channels[OPEN_INTEREST], websocket_channels[FUNDING], websocket_channels[CANDLES], websocket_channels[LIQUIDATIONS]), instrument_filter=('QUOTE', ('USD',)), sandbox='wss://stream-testnet.bybit.com/realtime', options={'compression': None}),
+        WebsocketEndpoint('wss://stream.bybit.com/realtime_public', channel_filter=(websocket_channels[L2_BOOK], websocket_channels[TRADES], websocket_channels[INDEX], websocket_channels[OPEN_INTEREST], websocket_channels[FUNDING], websocket_channels[CANDLES], websocket_channels[LIQUIDATIONS]), instrument_filter=('QUOTE', ('USDT',)), sandbox='wss://stream-testnet.bybit.com/realtime_public', options={'compression': None}),
+        WebsocketEndpoint('wss://stream.bybit.com/realtime_private', channel_filter=(websocket_channels[ORDER_INFO], websocket_channels[FILLS]), instrument_filter=('QUOTE', ('USDT',)), sandbox='wss://stream-testnet.bybit.com/realtime_private', options={'compression': None}),
     ]
     rest_endpoints = [RestEndpoint('https://api.bybit.com', routes=Routes('/v2/public/symbols'))]
     valid_candle_intervals = {'1m', '3m', '5m', '15m', '30m', '1h', '2h', '4h', '6h', '1d', '1w', '1M'}
@@ -78,9 +78,15 @@ class Bybit(Feed):
 
         return ret, info
 
-    def __reset(self):
+    def __reset(self, conn: AsyncConnection):
+        if self.std_channel_to_exchange(L2_BOOK) in conn.subscription:
+            for pair in conn.subscription[self.std_channel_to_exchange(L2_BOOK)]:
+                std_pair = self.exchange_symbol_to_std_symbol(pair)
+
+                if std_pair in self._l2_book:
+                    del self._l2_book[std_pair]
+
         self._instrument_info_cache = {}
-        self._l2_book = {}
 
     async def _candle(self, msg: dict, timestamp: float):
         '''
@@ -95,7 +101,7 @@ class Bybit(Feed):
                 "low": 9196,                            //min price
                 "volume": 81790,                        //volume
                 "turnover": 8.889247899999999,          //turnover
-                "confirm": False,                       //snapshot flag
+                "confirm": False,                       //snapshot flag (indicates if candle is closed or not)
                 "cross_seq": 297503466,
                 "timestamp": 1572425676958323           //cross time
             }],
@@ -106,12 +112,14 @@ class Bybit(Feed):
         ts = msg['timestamp_e6'] / 1_000_000
 
         for entry in msg['data']:
+            if self.candle_closed_only and not entry['confirm']:
+                continue
             c = Candle(self.id,
                        symbol,
                        entry['start'],
                        entry['end'],
                        self.candle_interval,
-                       None,
+                       entry['confirm'],
                        Decimal(entry['open']),
                        Decimal(entry['close']),
                        Decimal(entry['high']),
@@ -182,17 +190,26 @@ class Bybit(Feed):
             LOG.warning("%s: Unhandled message type %s", conn.uuid, msg)
 
     async def subscribe(self, connection: AsyncConnection):
-        self.__reset()
-        for chan in self.subscription:
+        self.__reset(connection)
+        for chan in connection.subscription:
             if not self.is_authenticated_channel(self.exchange_channel_to_std(chan)):
-                for pair in self.subscription[chan]:
-                    sym = str_to_symbol(pair)
-                    await connection.write(json.dumps(
-                        {
-                            "op": "subscribe",
-                            "args": [f"{chan}.{pair}"] if self.exchange_channel_to_std(chan) != CANDLES else [f"{chan if sym.quote == 'USD' else 'candle'}.{self.candle_interval_map[self.candle_interval]}.{pair}"]
-                        }
-                    ))
+                for pair in connection.subscription[chan]:
+                    sym = str_to_symbol(self.exchange_symbol_to_std_symbol(pair))
+
+                    if self.exchange_channel_to_std(chan) == CANDLES:
+                        c = chan if sym.quote == 'USD' else 'candle'
+                        sub = [f"{c}.{self.candle_interval_map[self.candle_interval]}.{pair}"]
+                    else:
+                        sub = [f"{chan}.{pair}"]
+
+                    await connection.write(json.dumps({"op": "subscribe", "args": sub}))
+            else:
+                await connection.write(json.dumps(
+                    {
+                        "op": "subscribe",
+                        "args": [f"{chan}"]
+                    }
+                ))
 
     async def _instrument_info(self, msg: dict, timestamp: float):
         """
@@ -303,7 +320,7 @@ class Bybit(Feed):
                     self.exchange_symbol_to_std_symbol(info['symbol']),
                     None,
                     Decimal(info['funding_rate_e6']) * Decimal('1e-6'),
-                    info['next_funding_time'].timestamp(),
+                    info['next_funding_time'].timestamp() if 'next_funding_time' in info else None,
                     ts,
                     predicted_rate=Decimal(info['predicted_funding_rate_e6']) * Decimal('1e-6'),
                     raw=info
@@ -435,7 +452,7 @@ class Bybit(Feed):
                 order_status[data["order_status"]],
                 LIMIT if data['order_type'] == 'Limit' else MARKET,
                 Decimal(data['price']),
-                Decimal(data['cum_exec_qty']),
+                Decimal(data['qty']),
                 Decimal(data['qty']) - Decimal(data['cum_exec_qty']),
                 self.timestamp_normalize(data.get('update_time') or data.get('O') or data.get('timestamp')),
                 raw=data,
@@ -490,7 +507,7 @@ class Bybit(Feed):
     #        await self.callback(BALANCES, feed=self.id, symbol=symbol, data=data, receipt_timestamp=timestamp)
 
     async def authenticate(self, conn: AsyncConnection):
-        if any(self.is_authenticated_channel(self.exchange_channel_to_std(chan)) for chan in self.subscription):
+        if any(self.is_authenticated_channel(self.exchange_channel_to_std(chan)) for chan in conn.subscription):
             auth = self._auth(self.key_id, self.key_secret)
             LOG.debug(f"{conn.uuid}: Sending authentication request with message {auth}")
             await conn.write(auth)
